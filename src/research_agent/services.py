@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import html
+import os
 import re
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -20,6 +21,8 @@ from .models import CompetitorProfile, QueryBank, RawQuote, ResearchQuery, Resea
 from .quality import filter_query_bank, keyword_summary
 
 USER_AGENT = "Mozilla/5.0 (compatible; ResearchAgent/0.1; +https://github.com/rkvishnoi-02/research-agent)"
+TAVILY_SEARCH_URL = "https://api.tavily.com/search"
+FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
 SOURCE_TYPE_MAP = {
     "reddit.com": "reddit",
     "old.reddit.com": "reddit",
@@ -249,6 +252,9 @@ def _default_competitor_seeds(subject: str) -> list[str]:
 
 @lru_cache(maxsize=128)
 def _search_duckduckgo(query: str, max_results: int = 5) -> list[dict[str, str]]:
+    tavily_results = _search_tavily(query, max_results=max_results)
+    if tavily_results:
+        return tavily_results
     response = requests.get(
         "https://html.duckduckgo.com/html/",
         params={"q": query},
@@ -269,8 +275,43 @@ def _search_duckduckgo(query: str, max_results: int = 5) -> list[dict[str, str]]
     return results
 
 
+def _search_tavily(query: str, max_results: int = 5) -> list[dict[str, str]]:
+    api_key = os.getenv("TAVILY_API_KEY")
+    if not api_key:
+        return []
+    try:
+        response = requests.post(
+            TAVILY_SEARCH_URL,
+            json={
+                "api_key": api_key,
+                "query": query,
+                "search_depth": "advanced",
+                "topic": "general",
+                "max_results": max_results,
+                "include_answer": False,
+                "include_raw_content": False,
+            },
+            headers={"User-Agent": USER_AGENT},
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException:
+        return []
+    results = []
+    for item in payload.get("results", []):
+        url = item.get("url")
+        if not url:
+            continue
+        results.append({"title": item.get("title", urlparse(url).netloc), "url": url})
+    return results
+
+
 @lru_cache(maxsize=128)
 def _fetch_page_lines(url: str) -> tuple[str, ...]:
+    firecrawl_lines = _fetch_with_firecrawl(url)
+    if firecrawl_lines:
+        return tuple(firecrawl_lines)
     readers = [
         f"https://r.jina.ai/http://{url}",
         f"https://r.jina.ai/http://{url.replace('https://', '').replace('http://', '')}",
@@ -286,6 +327,37 @@ def _fetch_page_lines(url: str) -> tuple[str, ...]:
         except requests.RequestException:
             continue
     return tuple()
+
+
+def _fetch_with_firecrawl(url: str) -> list[str]:
+    api_key = os.getenv("FIRECRAWL_API_KEY")
+    if not api_key:
+        return []
+    try:
+        response = requests.post(
+            FIRECRAWL_SCRAPE_URL,
+            json={
+                "url": url,
+                "formats": ["markdown"],
+                "onlyMainContent": True,
+            },
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "User-Agent": USER_AGENT,
+            },
+            timeout=40,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except requests.RequestException:
+        return []
+
+    data = payload.get("data", {})
+    markdown = data.get("markdown", "")
+    if not markdown:
+        return []
+    return _html_to_lines(markdown)
 
 
 def _html_to_lines(raw_text: str) -> list[str]:

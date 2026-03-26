@@ -9,6 +9,7 @@ description = "LangGraph-first market research agent with hard evidence-quality 
 requires-python = ">=3.10"
 dependencies = [
   "beautifulsoup4>=4.12,<5",
+  "firecrawl-py>=4,<5",
   "langchain>=1,<2",
   "langchain-core>=1,<2",
   "langchain-openai>=1,<2",
@@ -18,6 +19,7 @@ dependencies = [
   "deepagents>=0.4.12",
   "pydantic>=2,<3",
   "requests>=2.32,<3",
+  "tavily-python>=0.7,<1",
 ]
 
 [tool.setuptools]
