@@ -95,6 +95,7 @@ class QueryBank(BaseModel):
     complaint_queries: list[ResearchQuery] = Field(default_factory=list)
     switching_queries: list[ResearchQuery] = Field(default_factory=list)
     comparison_queries: list[ResearchQuery] = Field(default_factory=list)
+    desire_queries: list[ResearchQuery] = Field(default_factory=list)
     executed_queries: list[str] = Field(default_factory=list)
     rejected_queries: list[ResearchQuery] = Field(default_factory=list)
 
@@ -105,6 +106,7 @@ class QueryBank(BaseModel):
             + self.complaint_queries
             + self.switching_queries
             + self.comparison_queries
+            + self.desire_queries
         )
 
 

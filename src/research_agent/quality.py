@@ -28,6 +28,8 @@ EMOTIONAL_QUERY_PATTERNS = [
     r"\bvs\b",
     r"\bhonest\b",
     r"\bnot worth it\b",
+    r"\bi just want\b",
+    r"\bi wish\b",
 ]
 
 GENERIC_QUOTE_PHRASES = [
@@ -105,6 +107,7 @@ def filter_query_bank(query_bank: QueryBank) -> QueryBank:
         "complaint_queries": [],
         "switching_queries": [],
         "comparison_queries": [],
+        "desire_queries": [],
     }
 
     rejected = list(query_bank.rejected_queries)

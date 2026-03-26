@@ -136,6 +136,16 @@ def test_graph_retries_after_generic_quote_failure_and_recovers():
                 )
                 for i in range(3)
             ],
+            desire_queries=[
+                ResearchQuery(
+                    query_text=f"i just want a tool that works {i}",
+                    query_type="pain",
+                    target_source="reddit",
+                    expected_category="desire",
+                    intent_target="frustration",
+                )
+                for i in range(2)
+            ],
         )
 
     services = ResearchServices(

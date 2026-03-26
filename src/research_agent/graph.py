@@ -133,6 +133,15 @@ def build_research_graph(
                     retry_instruction="Generate stronger honest comparison queries.",
                 )
             )
+        if len(bank.desire_queries) < 2:
+            failures.append(
+                ValidationFailure(
+                    code="weak_desire_queries",
+                    message="Desire queries need explicit wish or I-just-want phrasing.",
+                    severity="critical",
+                    retry_instruction="Generate desire queries using I wish, I just want, and what I wanted language.",
+                )
+            )
         instructions = [failure.retry_instruction for failure in failures if failure.retry_instruction]
         next_loop_count = state.get("loop_count", 0) + (1 if failures else 0)
         status = "running"
@@ -163,6 +172,7 @@ def build_research_graph(
                 complaint_queries=query_bank.complaint_queries,
                 switching_queries=query_bank.switching_queries,
                 comparison_queries=query_bank.comparison_queries,
+                desire_queries=query_bank.desire_queries,
                 executed_queries=[query.query_text for query in query_bank.all_queries],
                 rejected_queries=query_bank.rejected_queries,
             ),
@@ -284,7 +294,11 @@ def build_research_graph(
                 )
 
         negative_quotes = [quote for quote in quotes if any(word in quote.text.lower() for word in ("annoying", "hate", "waste", "broken", "terrible"))]
-        positive_quotes = [quote for quote in quotes if any(word in quote.text.lower() for word in ("love", "best", "worth", "great"))]
+        positive_quotes = [
+            quote
+            for quote in quotes
+            if quote.category == "delight" or any(word in quote.text.lower() for word in ("love", "best", "worth", "great"))
+        ]
         if negative_quotes and positive_quotes:
             a = negative_quotes[0]
             b = positive_quotes[0]

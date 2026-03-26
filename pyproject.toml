@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "LangGraph-first market research agent with hard evidence-quality rules."
 requires-python = ">=3.10"
 dependencies = [
+  "beautifulsoup4>=4.12,<5",
   "langchain>=1,<2",
   "langchain-core>=1,<2",
   "langchain-openai>=1,<2",
@@ -16,6 +17,7 @@ dependencies = [
   "langsmith>=0.3.0",
   "deepagents>=0.4.12",
   "pydantic>=2,<3",
+  "requests>=2.32,<3",
 ]
 
 [tool.setuptools]
