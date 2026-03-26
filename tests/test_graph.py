@@ -184,3 +184,37 @@ def test_graph_rejects_vague_request():
 
     assert result["status"] == "rejected"
     assert result["validation_failures"]
+
+
+def test_query_quality_gate_stops_retrying_and_escalates():
+    def weak_query_generator(request, loop_count, retry_instructions):
+        return QueryBank(
+            pain_queries=[
+                ResearchQuery(
+                    query_text="tool annoying setup",
+                    query_type="pain",
+                    target_source="reddit",
+                    expected_category="pain",
+                    intent_target="frustration",
+                )
+            ],
+            complaint_queries=[],
+            switching_queries=[],
+            comparison_queries=[],
+        )
+
+    services = ResearchServices(query_generator=weak_query_generator)
+    thresholds = ValidationThresholds(max_loops=2)
+    graph = build_research_graph(services=services, thresholds=thresholds, checkpointer=InMemorySaver())
+    request = ResearchRequest(
+        research_request="Research raw buyer frustration for a sales engagement platform.",
+        product_name="Synvo",
+        audience="SDR teams",
+    )
+
+    result = graph.invoke_request(request, config={"configurable": {"thread_id": "query-gate-escalate"}})
+
+    assert result["status"] == "escalated"
+    assert result["loop_count"] == 2
+    assert result["escalation_report"] is not None
+    assert any(f.code == "weak_pain_queries" or f.code == "weak_complaint_queries" for f in result["validation_failures"])

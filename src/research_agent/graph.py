@@ -134,10 +134,15 @@ def build_research_graph(
                 )
             )
         instructions = [failure.retry_instruction for failure in failures if failure.retry_instruction]
+        next_loop_count = state.get("loop_count", 0) + (1 if failures else 0)
+        status = "running"
+        if failures:
+            status = "retry" if next_loop_count < thresholds.max_loops else "escalated"
         return {
             "validation_failures": failures,
             "retry_instructions": instructions,
-            "status": "retry" if failures else "running",
+            "status": status,
+            "loop_count": next_loop_count,
         }
 
     def spawn_collection(state: ResearchState):
@@ -525,8 +530,8 @@ def build_research_graph(
     builder.add_edge("query_generation", "query_quality_gate")
     builder.add_conditional_edges(
         "query_quality_gate",
-        lambda state: "query_generation" if state.get("status") == "retry" and state.get("loop_count", 0) < thresholds.max_loops else "collect_fanout",
-        ["query_generation", "collect_fanout"],
+        lambda state: "query_generation" if state.get("status") == "retry" else "escalate" if state.get("status") == "escalated" else "collect_fanout",
+        ["query_generation", "escalate", "collect_fanout"],
     )
     builder.add_conditional_edges("collect_fanout", spawn_collection, ["collect_voc", "collect_product", "collect_competitors"])
     builder.add_edge("collect_voc", "quote_authenticity_gate")

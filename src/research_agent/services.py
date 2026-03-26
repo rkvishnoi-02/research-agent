@@ -38,9 +38,9 @@ def default_query_generator(request: ResearchRequest, loop_count: int, retry_ins
             _build_query(f"{product} broken workflow {modifier}", "pain", "g2", "pain", "frustration"),
         ],
         complaint_queries=[
-            _build_query(f"worst thing about {product}", "complaint", "reddit", "failed_attempt", "frustration"),
-            _build_query(f"{product} not worth it review", "complaint", "g2", "objection", "regret"),
-            _build_query(f"{product} waste of money team", "complaint", "web", "objection", "regret"),
+            _build_query(f"worst thing about {product} waste of time", "complaint", "reddit", "failed_attempt", "frustration"),
+            _build_query(f"{product} not worth it for our team", "complaint", "g2", "objection", "regret"),
+            _build_query(f"{product} waste of money after setup", "complaint", "web", "objection", "regret"),
         ],
         switching_queries=[
             _build_query(f"why I left {product}", "switching", "reddit", "switching_story", "switching"),

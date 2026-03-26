@@ -59,6 +59,8 @@ EMOTIONAL_WORDS = {
     "love",
     "best",
     "terrible",
+    "impossible",
+    "want",
 }
 
 
@@ -157,7 +159,7 @@ def audit_quote_human_test(quote: RawQuote) -> QuoteAuditResult:
     emotional_hits = sum(word in lowered for word in EMOTIONAL_WORDS)
     specificity_hits = sum(
         token in lowered
-        for token in ("because", "when", "after", "during", "renewal", "setup", "team", "month", "week", "$")
+        for token in ("because", "when", "after", "during", "renewal", "setup", "team", "month", "week", "$", "ticket", "breaks", "reps")
     )
     generic = bool(reasons)
     if emotional_hits == 0 and specificity_hits == 0:
