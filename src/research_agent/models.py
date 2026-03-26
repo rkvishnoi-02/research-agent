@@ -46,6 +46,7 @@ class ResearchRequest(BaseModel):
     audience: str
     industry: str | None = None
     company_size: str | None = None
+    research_mode: Literal["live", "strict"] = "live"
     hitl_mode: Literal["enabled", "disabled"] = "disabled"
     focus_notes: str | None = None
     seed_quotes: list["RawQuote"] = Field(default_factory=list)

@@ -23,6 +23,7 @@ from .quality import filter_query_bank, keyword_summary
 USER_AGENT = "Mozilla/5.0 (compatible; ResearchAgent/0.1; +https://github.com/rkvishnoi-02/research-agent)"
 TAVILY_SEARCH_URL = "https://api.tavily.com/search"
 FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v2/scrape"
+APIFY_REDDIT_ACTOR_URL = "https://api.apify.com/v2/acts/FgJtjDwJCLhRH9saM/run-sync-get-dataset-items"
 SOURCE_TYPE_MAP = {
     "reddit.com": "reddit",
     "old.reddit.com": "reddit",
@@ -50,6 +51,27 @@ CONTEXT_AND_EMOTION_HINTS = (
     "broken",
 )
 
+SALES_ENGAGEMENT_RELEVANCE_TERMS = {
+    "outreach",
+    "salesloft",
+    "apollo",
+    "sequence",
+    "sequences",
+    "cadence",
+    "cadences",
+    "dialer",
+    "workflow",
+    "routing",
+    "reporting",
+    "automation",
+    "prospecting tool",
+    "sales engagement",
+    "follow-up tool",
+    "crm",
+    "renewal",
+    "admin setup",
+}
+
 
 def _derive_market_topic(request: ResearchRequest) -> str:
     text = request.research_request.strip()
@@ -69,6 +91,23 @@ def _derive_search_subject(request: ResearchRequest) -> str:
     if request.product_url:
         return request.product_name
     return _derive_market_topic(request)
+
+
+def _request_relevance_terms(request: ResearchRequest) -> set[str]:
+    subject = _derive_search_subject(request).lower()
+    terms = {request.product_name.lower()}
+    terms.update(name.lower() for name in _default_competitor_seeds(subject))
+    if "sales engagement" in subject:
+        terms.update(SALES_ENGAGEMENT_RELEVANCE_TERMS)
+    for token in re.findall(r"[a-zA-Z]{4,}", subject):
+        if token not in {"platform", "software", "teams"}:
+            terms.add(token.lower())
+    return {term for term in terms if term}
+
+
+def _quote_matches_request(quote: RawQuote, request: ResearchRequest) -> bool:
+    haystack = f"{quote.text} {quote.context_snippet} {quote.context}".lower()
+    return any(term in haystack for term in _request_relevance_terms(request))
 
 
 def _build_query(text: str, query_type: str, source: str, category: str, intent: str) -> ResearchQuery:
@@ -130,8 +169,25 @@ def default_voc_collector(request: ResearchRequest, query_bank: QueryBank, loop_
         return request.seed_quotes
     quotes: list[RawQuote] = []
     seen_texts: set[str] = set()
-    max_queries = len(query_bank.all_queries)
-    for query in query_bank.all_queries[:max_queries]:
+    all_queries = query_bank.all_queries
+    reddit_queries = [query for query in all_queries if query.target_source == "reddit"]
+    batched_reddit_results = 0
+    if reddit_queries:
+        for candidate in _collect_apify_reddit_quotes_batch(reddit_queries[:6]):
+            if not _quote_matches_request(candidate, request):
+                continue
+            norm = candidate.text.strip().lower()
+            if norm in seen_texts:
+                continue
+            seen_texts.add(norm)
+            quotes.append(candidate)
+            batched_reddit_results += 1
+            if len(quotes) >= 32:
+                return quotes
+
+    for query in all_queries:
+        if query.target_source == "reddit" and batched_reddit_results > 0:
+            continue
         source_candidates: list[RawQuote] = []
         if query.target_source == "reddit":
             source_candidates = _collect_reddit_quotes(query.query_text, query.expected_category)
@@ -141,6 +197,8 @@ def default_voc_collector(request: ResearchRequest, query_bank: QueryBank, loop_
             source_candidates = _collect_web_quotes(query.query_text, query.expected_category)
 
         for candidate in source_candidates:
+            if not _quote_matches_request(candidate, request):
+                continue
             norm = candidate.text.strip().lower()
             if norm in seen_texts:
                 continue
@@ -255,13 +313,16 @@ def _search_duckduckgo(query: str, max_results: int = 5) -> list[dict[str, str]]
     tavily_results = _search_tavily(query, max_results=max_results)
     if tavily_results:
         return tavily_results
-    response = requests.get(
-        "https://html.duckduckgo.com/html/",
-        params={"q": query},
-        headers={"User-Agent": USER_AGENT},
-        timeout=20,
-    )
-    response.raise_for_status()
+    try:
+        response = requests.get(
+            "https://html.duckduckgo.com/html/",
+            params={"q": query},
+            headers={"User-Agent": USER_AGENT},
+            timeout=20,
+        )
+        response.raise_for_status()
+    except requests.RequestException:
+        return []
     soup = BeautifulSoup(response.text, "html.parser")
     results: list[dict[str, str]] = []
     for anchor in soup.select("a.result__a"):
@@ -376,9 +437,30 @@ def _looks_like_real_quote(line: str) -> bool:
         return False
     if line.count("http") or lowered.startswith(("sign in", "cookie", "accept", "menu", "share", "* ", "- ", "title:", "author:")):
         return False
+    if any(
+        phrase in lowered
+        for phrase in (
+            "analytics cookies",
+            "marketing cookies",
+            "strictly necessary cookies",
+            "help us understand how visitors interact",
+            "privacy policy",
+            "terms of service",
+            "all rights reserved",
+            "copyright",
+            "table of contents",
+        )
+    ):
+        return False
     if any(phrase in lowered for phrase in ("users feel", "customers say", "many people")):
         return False
+    if lowered.startswith(("like the title", "title says it all", "does anyone", "anyone have advice")):
+        return False
     if not any(token in lowered for token in (" i ", " we ", " my ", " our ", " me ", " us ", " i'm", " i've", " we'd", " we're")):
+        return False
+    if not any(punct in line for punct in (".", "!", "?", ",")):
+        return False
+    if line.strip().endswith("?") and not any(token in lowered for token in CONTEXT_AND_EMOTION_HINTS):
         return False
     if any(token in lowered for token in CONTEXT_AND_EMOTION_HINTS):
         return True
@@ -389,9 +471,11 @@ def _looks_like_real_quote(line: str) -> bool:
 
 def _infer_quote_category(line: str, fallback: str) -> str:
     lowered = line.lower()
+    if any(token in lowered for token in ("hate", "annoy", "frustrat", "unintuitive", "bitter", "nightmare", "sucks", "broken")):
+        return "pain"
     if any(token in lowered for token in ("i just want", "i wish", "wanted a", "wish there was")):
         return "desire"
-    if any(token in lowered for token in ("why i left", "we left", "i switched", "we switched", "moved off", "moved to")):
+    if any(token in lowered for token in ("why i left", "we left", "i switched", "we switched", "moved off", "moved to", "went with", "replaced", "chose")):
         return "switching_story"
     if any(token in lowered for token in (" vs ", "compared to", "alternative", "better than", "salesloft", "outreach", "apollo")):
         return "comparison"
@@ -432,6 +516,11 @@ def _extract_quote_candidates(lines: tuple[str, ...], category: str, url: str, t
 def _collect_web_quotes(query: str, category: str) -> list[RawQuote]:
     candidates: list[RawQuote] = []
     for result in _search_duckduckgo(query, max_results=3):
+        if _source_type_for_url(result["url"]) == "web" and any(
+            blocked in result["url"].lower()
+            for blocked in ("/pricing", "/features", "/product", "/tools/", "/integrations", "/solutions")
+        ):
+            continue
         page_lines = _fetch_page_lines(result["url"])
         if not page_lines:
             continue
@@ -442,6 +531,10 @@ def _collect_web_quotes(query: str, category: str) -> list[RawQuote]:
 
 
 def _collect_reddit_quotes(query: str, category: str) -> list[RawQuote]:
+    apify_candidates = _collect_apify_reddit_quotes(query, category)
+    if apify_candidates:
+        return apify_candidates
+
     candidates: list[RawQuote] = []
     for result in _search_duckduckgo(f"site:reddit.com {query}", max_results=4):
         parsed = urlparse(result["url"])
@@ -485,6 +578,113 @@ def _collect_reddit_quotes(query: str, category: str) -> list[RawQuote]:
                 continue
             candidates.extend(_extract_quote_candidates(lines, category, result["url"], title))
             if len(candidates) >= 12:
+                return candidates
+    return candidates
+
+
+def _collect_apify_reddit_quotes(query: str, category: str) -> list[RawQuote]:
+    token = os.getenv("APIFY_API_TOKEN")
+    if not token:
+        return []
+    try:
+        response = requests.post(
+            APIFY_REDDIT_ACTOR_URL,
+            params={"token": token, "format": "json", "clean": "1"},
+            json={
+                "searches": [query],
+                "searchPosts": True,
+                "searchComments": True,
+                "searchCommunities": False,
+                "searchUsers": False,
+                "skipComments": False,
+                "skipUserPosts": True,
+                "skipCommunity": True,
+                "includeNSFW": False,
+                "sort": "relevance",
+                "maxItems": 10,
+                "maxPostCount": 10,
+                "maxComments": 10,
+                "proxy": {"useApifyProxy": True},
+            },
+            headers={"User-Agent": USER_AGENT},
+            timeout=180,
+        )
+        response.raise_for_status()
+        items = response.json()
+    except requests.RequestException:
+        return []
+
+    candidates: list[RawQuote] = []
+    for item in items:
+        title = item.get("title") or item.get("communityName") or "Reddit"
+        url = item.get("url") or "https://www.reddit.com"
+        text_blocks = [item.get("body", "")]
+        comments = item.get("comments") or []
+        for comment in comments[:10]:
+            body = comment.get("body") if isinstance(comment, dict) else None
+            if body:
+                text_blocks.append(body)
+        for block in text_blocks:
+            lines = tuple(_html_to_lines(block))
+            if not lines:
+                continue
+            candidates.extend(_extract_quote_candidates(lines, category, url, title))
+            if len(candidates) >= 12:
+                return candidates
+    return candidates
+
+
+def _collect_apify_reddit_quotes_batch(queries: list[ResearchQuery]) -> list[RawQuote]:
+    token = os.getenv("APIFY_API_TOKEN")
+    if not token or not queries:
+        return []
+    query_lookup = {query.query_text: query.expected_category for query in queries}
+    try:
+        response = requests.post(
+            APIFY_REDDIT_ACTOR_URL,
+            params={"token": token, "format": "json", "clean": "1"},
+            json={
+                "searches": [query.query_text for query in queries],
+                "searchPosts": True,
+                "searchComments": True,
+                "searchCommunities": False,
+                "searchUsers": False,
+                "skipComments": False,
+                "skipUserPosts": True,
+                "skipCommunity": True,
+                "includeNSFW": False,
+                "sort": "relevance",
+                "maxItems": 12,
+                "maxPostCount": 12,
+                "maxComments": 8,
+                "proxy": {"useApifyProxy": True},
+            },
+            headers={"User-Agent": USER_AGENT},
+            timeout=120,
+        )
+        response.raise_for_status()
+        items = response.json()
+    except requests.RequestException:
+        return []
+
+    candidates: list[RawQuote] = []
+    for item in items:
+        title = item.get("title") or item.get("communityName") or "Reddit"
+        url = item.get("url") or "https://www.reddit.com"
+        search_query = item.get("searchQuery") or item.get("search") or ""
+        fallback_category = query_lookup.get(search_query, "pain")
+        text_blocks = [item.get("body", "")]
+        comments = item.get("comments") or []
+        for comment in comments[:10]:
+            body = comment.get("body") if isinstance(comment, dict) else None
+            if body:
+                text_blocks.append(body)
+        for block in text_blocks:
+            lines = tuple(_html_to_lines(block))
+            if not lines:
+                continue
+            candidates.extend(_extract_quote_candidates(lines, fallback_category, url, title))
+            if len(candidates) >= 24:
                 return candidates
     return candidates
 

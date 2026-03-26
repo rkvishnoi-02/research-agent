@@ -57,6 +57,25 @@ def build_research_graph(
     services = services or ResearchServices()
     thresholds = thresholds or ValidationThresholds()
 
+    def active_thresholds(state: ResearchState) -> ValidationThresholds:
+        request = state["request"]
+        if request.research_mode == "strict":
+            return thresholds
+        return thresholds.model_copy(
+            update={
+                "min_pain_quotes": min(thresholds.min_pain_quotes, 1),
+                "min_failed_attempts": 0,
+                "min_objections": 0,
+                "min_switching_stories": 0,
+                "min_comparisons": 1,
+                "min_desires": 0,
+                "min_contradictions": 0,
+                "min_decision_moments": 0,
+                "min_truth_density": min(thresholds.min_truth_density, 1.0),
+                "max_loops": min(thresholds.max_loops, 2),
+            }
+        )
+
     def strategist_node(state: ResearchState) -> dict:
         request = state["request"]
         failures: list[ValidationFailure] = []
@@ -95,6 +114,7 @@ def build_research_graph(
         }
 
     def query_quality_gate_node(state: ResearchState) -> dict:
+        current_thresholds = active_thresholds(state)
         bank = state["query_bank"] or QueryBank()
         failures: list[ValidationFailure] = []
         if len(bank.pain_queries) < 4:
@@ -146,7 +166,7 @@ def build_research_graph(
         next_loop_count = state.get("loop_count", 0) + (1 if failures else 0)
         status = "running"
         if failures:
-            status = "retry" if next_loop_count < thresholds.max_loops else "escalated"
+            status = "retry" if next_loop_count < current_thresholds.max_loops else "escalated"
         return {
             "validation_failures": failures,
             "retry_instructions": instructions,
@@ -196,7 +216,18 @@ def build_research_graph(
         seen_ids = {quote.quote_id for quote in state.get("raw_quotes", [])} | {
             quote.quote_id for quote in state.get("rejected_quotes", [])
         }
-        new_candidates = [quote for quote in state.get("candidate_quotes", []) if quote.quote_id not in seen_ids]
+        seen_texts = {
+            quote.text.strip().lower()
+            for quote in state.get("raw_quotes", []) + state.get("rejected_quotes", [])
+            if quote.text.strip()
+        }
+        new_candidates = []
+        for quote in state.get("candidate_quotes", []):
+            normalized = quote.text.strip().lower()
+            if quote.quote_id in seen_ids or normalized in seen_texts:
+                continue
+            seen_texts.add(normalized)
+            new_candidates.append(quote)
 
         accepted = []
         rejected = []
@@ -326,6 +357,20 @@ def build_research_graph(
                     confidence="multi_source" if len(set(supporting_ids)) > 1 else "single_source",
                 )
             )
+        for quote in quotes:
+            if quote.category not in {"pain", "comparison"}:
+                continue
+            docs = retriever.invoke(quote.text)
+            supporting_ids = [document.metadata["quote_id"] for document in docs if document.metadata.get("quote_id")] or [quote.quote_id]
+            links.append(
+                EvidenceLink(
+                    insight_id=f"{quote.category}-{quote.quote_id}",
+                    insight_text=quote.text,
+                    insight_type=quote.category,
+                    supporting_quote_ids=supporting_ids,
+                    confidence="multi_source" if len(set(supporting_ids)) > 1 else "single_source",
+                )
+            )
 
         total_evidence_units = sum(len(link.supporting_quote_ids) for link in links)
         truth_density = total_evidence_units / max(1, len(links))
@@ -355,6 +400,7 @@ def build_research_graph(
         }
 
     def validation_node(state: ResearchState) -> dict:
+        current_thresholds = active_thresholds(state)
         failures: list[ValidationFailure] = []
         quotes = state.get("raw_quotes", [])
         synthesis = state.get("synthesis") or SynthesisArtifacts()
@@ -371,14 +417,14 @@ def build_research_graph(
                     )
                 )
 
-        require_count(categories["pain"], thresholds.min_pain_quotes, "insufficient_pain_quotes", "Pain quote coverage too low", "Generate stronger frustration and regret queries.")
-        require_count(categories["failed_attempt"], thresholds.min_failed_attempts, "insufficient_failed_attempts", "Failed-attempt coverage too low", "Search for what people tried and why it failed.")
-        require_count(categories["objection"], thresholds.min_objections, "insufficient_objections", "Objection coverage too low", "Search for pricing, trust, and adoption objections.")
-        require_count(categories["switching_story"], thresholds.min_switching_stories, "insufficient_switching", "Switching story coverage too low", "Search for why people left competitors and what triggered the switch.")
-        require_count(categories["comparison"], thresholds.min_comparisons, "insufficient_comparisons", "Comparison coverage too low", "Search for honest X vs Y comparisons.")
-        require_count(categories["desire"], thresholds.min_desires, "insufficient_desires", "Desire coverage too low", "Search for quotes about what people wish existed.")
+        require_count(categories["pain"], current_thresholds.min_pain_quotes, "insufficient_pain_quotes", "Pain quote coverage too low", "Generate stronger frustration and regret queries.")
+        require_count(categories["failed_attempt"], current_thresholds.min_failed_attempts, "insufficient_failed_attempts", "Failed-attempt coverage too low", "Search for what people tried and why it failed.")
+        require_count(categories["objection"], current_thresholds.min_objections, "insufficient_objections", "Objection coverage too low", "Search for pricing, trust, and adoption objections.")
+        require_count(categories["switching_story"], current_thresholds.min_switching_stories, "insufficient_switching", "Switching story coverage too low", "Search for why people left competitors and what triggered the switch.")
+        require_count(categories["comparison"], current_thresholds.min_comparisons, "insufficient_comparisons", "Comparison coverage too low", "Search for honest X vs Y comparisons.")
+        require_count(categories["desire"], current_thresholds.min_desires, "insufficient_desires", "Desire coverage too low", "Search for quotes about what people wish existed.")
 
-        if len(synthesis.contradictions) < thresholds.min_contradictions:
+        if len(synthesis.contradictions) < current_thresholds.min_contradictions:
             failures.append(
                 ValidationFailure(
                     code="missing_contradictions",
@@ -388,7 +434,7 @@ def build_research_graph(
                 )
             )
 
-        if len(synthesis.decision_moments) < thresholds.min_decision_moments:
+        if len(synthesis.decision_moments) < current_thresholds.min_decision_moments:
             failures.append(
                 ValidationFailure(
                     code="missing_decision_moments",
@@ -398,7 +444,7 @@ def build_research_graph(
                 )
             )
 
-        if synthesis.evidence_map.truth_density < thresholds.min_truth_density:
+        if synthesis.evidence_map.truth_density < current_thresholds.min_truth_density:
             failures.append(
                 ValidationFailure(
                     code="low_truth_density",
@@ -409,13 +455,13 @@ def build_research_graph(
             )
 
         ratio, generic_ids, authenticity_failures, _ = quote_authenticity_metrics(quotes)
-        if ratio > thresholds.max_generic_quote_ratio:
+        if ratio > current_thresholds.max_generic_quote_ratio:
             failures.append(
                 ValidationFailure(
                     code="generic_quote_ratio",
                     message=(
                         f"Generic or paraphrased quote ratio {ratio:.2%} exceeds "
-                        f"the allowed {thresholds.max_generic_quote_ratio:.0%}."
+                        f"the allowed {current_thresholds.max_generic_quote_ratio:.0%}."
                     ),
                     severity="critical",
                     retry_instruction=(
@@ -445,7 +491,7 @@ def build_research_graph(
             )
 
         status = "approved" if not failures else "retry"
-        if failures and state.get("loop_count", 0) >= thresholds.max_loops:
+        if failures and state.get("loop_count", 0) >= current_thresholds.max_loops:
             status = "escalated"
 
         return {

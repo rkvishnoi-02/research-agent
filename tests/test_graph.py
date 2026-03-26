@@ -2,6 +2,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from research_agent.graph import build_research_graph
 from research_agent.models import QueryBank, RawQuote, ResearchQuery, ResearchRequest, ValidationThresholds
+from research_agent import services as service_module
 from research_agent.services import ResearchServices
 
 
@@ -228,3 +229,38 @@ def test_query_quality_gate_stops_retrying_and_escalates():
     assert result["loop_count"] == 2
     assert result["escalation_report"] is not None
     assert any(f.code == "weak_pain_queries" or f.code == "weak_complaint_queries" for f in result["validation_failures"])
+
+
+def test_voc_collector_falls_back_to_reddit_when_apify_returns_nothing(monkeypatch):
+    request = ResearchRequest(
+        research_request="Research raw buyer frustration for a sales engagement platform.",
+        product_name="Synvo",
+        audience="SDR teams",
+    )
+    bank = QueryBank(
+        pain_queries=[
+            ResearchQuery(
+                query_text="tool annoying reddit",
+                query_type="pain",
+                target_source="reddit",
+                expected_category="pain",
+                intent_target="frustration",
+            )
+        ]
+    )
+    fallback_quote = RawQuote(
+        text="We wasted two weeks trying to get Outreach live and ended up reverting to manual follow-ups.",
+        source="r/sales",
+        source_url="https://reddit.com/post",
+        source_type="reddit",
+        context="Launch failure",
+        context_snippet="The rollout fell apart.\nWe wasted two weeks trying to get Outreach live and ended up reverting to manual follow-ups.\nThat was the end of the test.",
+        category="failed_attempt",
+    )
+
+    monkeypatch.setattr(service_module, "_collect_apify_reddit_quotes_batch", lambda queries: [])
+    monkeypatch.setattr(service_module, "_collect_reddit_quotes", lambda query, category: [fallback_quote])
+
+    quotes = service_module.default_voc_collector(request, bank, 0)
+
+    assert quotes == [fallback_quote]

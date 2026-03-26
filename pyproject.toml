@@ -22,6 +22,9 @@ dependencies = [
   "tavily-python>=0.7,<1",
 ]
 
+[project.scripts]
+research-agent-run = "research_agent.cli:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
