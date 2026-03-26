@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "research-agent"
+version = "0.1.0"
+description = "LangGraph-first market research agent with hard evidence-quality rules."
+requires-python = ">=3.10"
+dependencies = [
+  "langchain>=1,<2",
+  "langchain-core>=1,<2",
+  "langchain-openai>=1,<2",
+  "langchain-text-splitters>=1,<2",
+  "langgraph>=1,<2",
+  "langsmith>=0.3.0",
+  "deepagents>=0.4.12",
+  "pydantic>=2,<3",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
